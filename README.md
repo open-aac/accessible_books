@@ -1,5 +1,7 @@
-Async and background job tool. I don't like name collisions for gems, and kept trying
-to think of something creative around 'N Sync, but this was the best I could come up with.
+AccessibleBooks
 
-Basically a layer on top of Resque to handle my specific needs for workers and
-progress-tracking for background jobs.
+Tarheel Reader is a great tool, but needs just a little help in
+its programmatic access. Also this gem supports retrieving 
+accessible books from other sources with a similar formatting,
+including checking the head attribute of an HTML response for directions
+on where to find the JSON-formatted data for an online book.

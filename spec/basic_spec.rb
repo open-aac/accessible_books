@@ -1,269 +1,141 @@
 require 'spec_helper'
-require 'boy_band'
-require 'active_support'
-require 'fakeredis'
-require 'rails'
+require 'accessible-books'
 
-describe BoyBand do
-  module Async
-    extend ActiveSupport::Concern
-    include BoyBand::AsyncInstanceMethods
-    
-    module ClassMethods
-      include BoyBand::AsyncClassMethods
+describe AccessibleBooks do
+  describe "tarheel_id" do
+    it "should return an id only if valid" do
+      expect(AccessibleBooks.tarheel_id(nil)).to eq(nil)
+      expect(AccessibleBooks.tarheel_id("bacon")).to eq(nil)
+      expect(AccessibleBooks.tarheel_id("https://tarheelreader.org/2015/11/17/my-favorite-people-at-school/")).to eq('my-favorite-people-at-school')
+      expect(AccessibleBooks.tarheel_id("https://tarheelreader.org/2013/02/18/the-princess-and-the-pea-2/")).to eq('the-princess-and-the-pea-2')
+      expect(AccessibleBooks.tarheel_id("https://tarheelreader.org/2013/02/the-princess-and-the-pea-2/")).to eq(nil)
     end
-  end
-  module Worker
-    extend BoyBand::WorkerMethods
-  end
-  
-  class AsyncObject
-    include Async
-    def id
-      12345
-    end
-    
-    def updated_at
-      Time.parse("Jun 1, 2016")
-    end
-    
-    def reload
-      self
-    end
-    
-    def self.count
-      1
-    end
-    
-    def self.find_by(*args)
-      opts = JSON.parse(args[0].to_json)
-      if opts['id'].to_s != '12345'
-        return nil
-      end
-      AsyncObject.new
-    end
-  end
-  
-  class AsyncObject2 < AsyncObject
-  end
-  
-  class FakeLogger
-    def warn(*args)
-    end
-    
-    def info(*args)
-    end
-  end
-  
-  before(:each) do
-    Worker.flush_queues
-    Resque.redis = Redis.new
-    @logger = FakeLogger.new
-    allow(Rails).to receive(:logger).and_return(@logger)
   end
 
-  describe "async" do
-    describe "object scheduling" do
-      it "should not error on empty values" do
-        u = AsyncObject.new
-        expect(u.schedule(nil)).to eq(nil)
-        expect(Worker.scheduled?(AsyncObject, :perform_action, {'id' => u.id, 'method' => nil, 'arguments' => []})).to be_falsey
-      end
-    
-      it "should schedule events" do
-        u = AsyncObject.new
-        u.schedule(:do_something, 1, 2, 3)
-        expect(Worker.scheduled?(AsyncObject, :perform_action, {'id' => u.id, 'method' => 'do_something', 'arguments' => [1,2,3]})).to be_truthy
-      end
+  describe "find_json" do
+    it "should handle a nil value" do
+      expect(AccessibleBooks.find_json(nil)).to eq(nil)
     end
-  
-    describe "class scheduling" do
-      it "should not error on empty values" do
-        expect(AsyncObject.schedule(nil)).to eq(nil)
-        expect(Worker.scheduled?(AsyncObject, :perform_action, {'method' => nil, 'arguments' => []})).to be_falsey
-      end
-    
-      it "should schedule events" do
-        AsyncObject.schedule(:do_something, 1, 2, 3)
-        expect(Worker.scheduled?(AsyncObject, :perform_action, {'method' => 'do_something', 'arguments' => [1,2,3]})).to be_truthy
-      end
+
+    it "should recognize and retrieve a tarheel URL" do
+      expect(AccessibleBooks).to receive(:tarheel_json).and_return({'book' => true})
+      expect(AccessibleBooks.find_json("https://tarheelreader.org/2017/11/24/funny-people/")).to eq({
+        'book' => true
+      })
     end
-  
-    describe "perform_action" do
-      it "should raise on invalid method" do
-        expect{ AsyncObject.perform_action({'method' => 'bad_method', 'arguments' => []}) }.to raise_error("method not found: AsyncObject:bad_method")
-      end
-    
-      it "should call class methods" do
-        expect(AsyncObject).to receive(:hippo).with(1,2,3).and_return("ok")
-        expect(AsyncObject.perform_action({'method' => 'hippo', 'arguments' => [1,2,3]})).to eq("ok")
-      end
-    
-      it "should raise when the record isn't found" do
-        expect(@logger).to receive(:warn).with("expected record not found: AsyncObject:5")
-        AsyncObject.perform_action({'id' => 5, 'method' => 'id', 'arguments' => []})
-      end
-    
-      it "should call object methods" do
-        u = AsyncObject.new
-        expect_any_instance_of(AsyncObject).to receive(:hippo).with(1,2,3).and_return("ok")
-        expect(AsyncObject.perform_action({'id' => u.id, 'method' => 'hippo', 'arguments' => [1,2,3]})).to eq("ok")
-      end
+
+    it "should try to download an arbitrary URL" do
+      expect(Typhoeus).to receive(:get).with("https://www.example.com/books/123.json", followlocation: true).and_return(OpenStruct.new(body: {
+        book: true
+      }.to_json))
+      expect(AccessibleBooks.find_json("https://www.example.com/books/123.json")).to eq({
+        'book' => true
+      })
+    end
+
+    it "should fix a dropbox download URL" do
+      expect(Typhoeus).to receive(:get).with("https://www.dropbox.com/files/book.json?dl=1", followlocation: true).and_return(OpenStruct.new(body: {
+        book: true,
+        pages: [{image_url: 'https://www.example.com/pic.png'}]
+      }.to_json))
+      expect(AccessibleBooks.find_json("https://www.dropbox.com/files/book.json?dl=0")).to eq({
+        'book' => true,
+        'image_url' => 'https://www.example.com/pic.png',
+        'pages' => [{'image_url' => 'https://www.example.com/pic.png'}]
+      })
+    end
+
+    it "should find a head attribute and use it as a redirect" do
+      expect(Typhoeus).to receive(:get).with("https:/www.example.com/api/v1/books/123.json").and_return(OpenStruct.new(body: {
+        book: true
+      }.to_json))
+      expect(Typhoeus).to receive(:get).with("https://www.example.com/books/123", followlocation: true).and_return(OpenStruct.new(body: "
+        <html><head>
+          <meta property='book:url' content='https:/www.example.com/api/v1/books/123.json' />
+        </head></html>
+      "))
+      expect(AccessibleBooks.find_json("https://www.example.com/books/123")).to eq({
+        'book' => true
+      })
+    end
+
+    it "should not error on bad response data" do
+      expect(Typhoeus).to receive(:get).with("https://www.example.com/books/123.json", followlocation: true).and_return(OpenStruct.new(body: "asdfawgew"))
+      expect(AccessibleBooks.find_json("https://www.example.com/books/123.json")).to eq(nil)
+    end
+  end
+
+  describe "tarheel_json_url" do
+    it "should return a correct value" do
+      expect(AccessibleBooks.tarheel_json_url(nil)).to eq(nil)
+      expect(AccessibleBooks.tarheel_json_url('abc')).to eq("https://tarheelreader.org/book-as-json/?slug=abc")
     end
   end
   
-  describe "worker" do
-    it "should properly flush queues" do
-      Worker.schedule(AsyncObject, 'do_something', 2)
-      expect(Worker.scheduled?(AsyncObject, :do_something, 2)).to eq(true)
-      Worker.flush_queues
-      expect(Worker.scheduled?(AsyncObject, :do_something, 2)).to eq(false)
-    end
-  
-    describe "perform" do
-      it "should parse out Worker options and call the appropriate method" do
-        expect(AsyncObject).to receive(:bacon).with(12)
-        Worker.perform('AsyncObject', 'bacon', 12)
-      
-        expect(AsyncObject2).to receive(:halo).with(6, {a: 1})
-        Worker.perform('AsyncObject2', :halo, 6, {a: 1})
-      end
-    
-      it "should run scheduled events when told" do
-        Worker.schedule(AsyncObject, :bacon, 12)
-        Worker.schedule(AsyncObject2, :halo, 6, {a: 1})
-        expect(AsyncObject).to receive(:bacon).with(12)
-        expect(AsyncObject2).to receive(:halo).with(6, {'a' => 1})
-        Worker.process_queues
-      end
-    
-      it "should catch termination exceptions and re-queue" do
-        expect(AsyncObject).to receive(:bacon).with(12).and_raise(Resque::TermException.new('SIGTERM'))
-        Worker.schedule(AsyncObject, :bacon, 12)
-        Worker.process_queues
-        expect(Worker.scheduled?(AsyncObject, :bacon, 12)).to be_truthy
-      end
-    end
-  
-    describe "schedule" do
-      it "should add to the queue" do
-        Worker.schedule(AsyncObject, 'do_something', 2)
-        expect(Worker.scheduled?(AsyncObject, :do_something, 2)).to be_truthy
-        expect(Worker.scheduled?(AsyncObject, :do_something, 1)).to be_falsey
-        Worker.schedule(AsyncObject, 'do_something', {a: 1, b: [2,3,4], c: {d: 7}})
-        expect(Worker.scheduled?(AsyncObject, :do_something, {a: 1, b: [2,3,4], c: {d: 7}})).to be_truthy
-      end
-
-      it "should add to a difference queue" do
-        Worker.schedule_for('bacon', AsyncObject, 'do_something', 2)
-        expect(Worker.scheduled?(AsyncObject, :do_something, 2)).to be_falsey
-        expect(Worker.scheduled?(AsyncObject, :do_something, 1)).to be_falsey
-        expect(Worker.scheduled_for?('bacon', AsyncObject, :do_something, 2)).to be_truthy
-        expect(Worker.scheduled_for?('bacon', AsyncObject, :do_something, 1)).to be_falsey
-        Worker.schedule_for('priority', AsyncObject, 'do_something', {a: 1, b: [2,3,4], c: {d: 7}})
-        expect(Worker.scheduled?(AsyncObject, :do_something, {a: 1, b: [2,3,4], c: {d: 7}})).to be_falsey
-        expect(Worker.scheduled_for?('priority', AsyncObject, :do_something, {a: 1, b: [2,3,4], c: {d: 7}})).to be_truthy
-      end
-    
-      it "should add to the queue from async-enabled models" do
-        AsyncObject.schedule(:hip_hop, 16)
-        u = AsyncObject.new
-        u.schedule(:hip_hop, 17)
-        expect(Worker.scheduled?(AsyncObject, :perform_action, {'method' => 'hip_hop', 'arguments' => [16]})).to be_truthy
-        expect(Worker.scheduled?(AsyncObject, :perform_action, {'id' => u.id, 'method' => 'hip_hop', 'arguments' => [17]})).to be_truthy
-      end
-    end
-  
-    describe "perform_at" do
-      it "should not log on short jobs" do
-        expect(Worker).to receive(:ts).and_return(1469141072, 1469141072 + 10)
-        expect(@logger).to_not receive(:error)
-        Worker.perform_at(:normal, 'AsyncObject', 'count')
-      end
-
-      it "should log on long-running jobs" do
-        expect(Worker).to receive(:ts).and_return(1469141072, 1469141072 + 65)
-        expect(@logger).to receive(:error).with("long-running job, AsyncObject . count (), 65s")
-        Worker.perform_at(:normal, 'AsyncObject', 'count')
-      end
-    
-      it "should not log on semi-long jobs for the slow queue" do
-        expect(Worker).to receive(:ts).and_return(1469141072, 1469141072 + (60*2))
-        expect(@logger).to_not receive(:error)
-        Worker.perform_at(:slow, 'AsyncObject', 'count')
-      end
-    
-      it "should log on really-long jobs for the slow queue" do
-        expect(Worker).to receive(:ts).and_return(1469141072, 1469141072 + (60*11))
-        expect(@logger).to receive(:error).with("long-running job, AsyncObject . count () (expected slow), 660s")
-        Worker.perform_at(:slow, 'AsyncObject', 'count')
-      end
-    end
-  
-    describe "scheduled_actions" do
-      it "should have list actions" do
-        Worker.schedule(AsyncObject, :something)
-        expect(Worker.scheduled_actions.length).to eq(1)
-        expect(Worker.scheduled_actions[-1]).to eq({
-          'class' => 'Worker', 'args' => ['AsyncObject', 'something']
-        })
-        u = AsyncObject.new
-        u.schedule(:do_something, 'cool')
-        expect(Worker.scheduled_actions.length).to be >= 2
-        expect(Worker.scheduled_actions[-1]).to eq({
-          'class' => 'Worker', 'args' => ['AsyncObject', 'perform_action', {'id' => u.id, 'method' => 'do_something', 'scheduled' => Time.now.to_i, 'arguments' => ['cool']}]
-        })
-      end
+  describe "tarheel_json" do
+    it "should ignore bad urls" do
+      expect(AccessibleBooks.tarheel_json(nil)).to eq(nil)
+      expect(AccessibleBooks.tarheel_json('asdf')).to eq(nil)
     end
 
-    describe "stop_stuck_workers" do
-      it "should have unregister only stuck workers" do
-        worker1 = OpenStruct.new({
-          :processing => {
-            'run_at' => 6.weeks.ago
-          }
-        })
-        worker2 = OpenStruct.new({
-          :processing => {
-            'run_at' => 1.seconds.ago
-          }
-        })
-        worker3 = OpenStruct.new({
-          :processing => {
-          }
-        })
-        expect(Resque).to receive(:workers).and_return([worker1, worker2, worker3])
-        expect(worker1).to receive(:unregister_worker)
-        expect(worker2).to_not receive(:unregister_worker)
-        expect(worker3).to_not receive(:unregister_worker)
-        Worker.stop_stuck_workers
-      end
+    it "should parse the JSON response and return a processed result" do
+      expect(Typhoeus).to receive(:get).with("https://tarheelreader.org/book-as-json/?slug=islands-4").and_return(OpenStruct.new(body: {"title":"Islands","author":"Andrewkssb","type":" ","audience":"E","reviewed":false,"language":"en","categories":["Peop"],"tags":["Island","Andrew","kssb"],"pages":[{"text":"Islands","url":"\/uploads\/2018\/06\/31964-5b198f2c5eb65_t.jpg","width":68,"height":100},{"text":"You can take a vacation on an island.","url":"\/uploads\/2018\/06\/31964-5b198f2c5eb65.jpg","width":344,"height":500},{"text":"They are surrounded by water.","url":"\/uploads\/2018\/06\/31964-5b198f2ca5cb8.jpg","width":500,"height":333},{"text":"Islands are beautiful!","url":"\/uploads\/2018\/06\/31964-5b198f2c66bed.jpg","width":275,"height":183}],"status":"publish","ID":200845,"author_id":"31964","rating_count":0,"rating_value":0,"rating_total":0,"modified":"2018-06-07 16:03:50","created":"2018-06-07 16:03:03","slug":"islands-4","link":"\/2018\/06\/07\/islands-4\/","bust":"180706160350"}.to_json))
+      expect(AccessibleBooks.tarheel_json("https://tarheelreader.org/2018/06/07/islands-4/")).to eq({
+        "title" => "Islands",
+        "attribution_url" => "https://tarheelreader.org/photo-credits/?id=islands-4",
+        "author" => "Andrewkssb",
+        "book_url" => "https://tarheelreader.org/2018/06/07/islands-4/",
+        "image_url" => "https://tarheelreader.org/uploads/2018/06/31964-5b198f2c5eb65.jpg",
+        "type" => " ",
+        "audience" => "E",
+        "reviewed" => false,
+        "language" => "en",
+        "categories" => ["Peop"],
+        "tags" => ["Island","Andrew","kssb"],
+        "pages" => [
+            {"text" => "Islands","url" => "\/uploads\/2018\/06\/31964-5b198f2c5eb65_t.jpg","width" => 68,"height" => 100, "id" => "title_page", "image_url" => "https://tarheelreader.org/uploads/2018/06/31964-5b198f2c5eb65_t.jpg"},
+            {"text" => "You can take a vacation on an island.","url" => "\/uploads\/2018\/06\/31964-5b198f2c5eb65.jpg","width" => 344,"height" => 500, "id" => "page_1", "image_url" => "https://tarheelreader.org/uploads/2018/06/31964-5b198f2c5eb65.jpg"},
+            {"text" => "They are surrounded by water.","url" => "\/uploads\/2018\/06\/31964-5b198f2ca5cb8.jpg","width" => 500,"height" => 333, "id" => "page_2", "image_url" => "https://tarheelreader.org/uploads/2018/06/31964-5b198f2ca5cb8.jpg"},
+            {"text" => "Islands are beautiful!","url" => "\/uploads\/2018\/06\/31964-5b198f2c66bed.jpg","width" => 275,"height" => 183, "id" => "page_3", "image_url" => "https://tarheelreader.org/uploads/2018/06/31964-5b198f2c66bed.jpg"}
+        ],
+        "status" => "publish",
+        "ID" => 200845,
+        "author_id" => "31964",
+        "rating_count" => 0,
+        "rating_value" => 0,
+        "rating_total" => 0,
+        "modified" => "2018-06-07 16:03:50",
+        "created" => "2018-06-07 16:03:03",
+        "slug" => "islands-4",
+        "link" => "\/2018\/06\/07\/islands-4\/",
+        "bust" => "180706160350"
+      })
     end
 
-    describe "prune_dead_workers" do
-      it "should prune dead workers" do
-        worker1 = OpenStruct.new
-        worker2 = OpenStruct.new
-        worker3 = OpenStruct.new
-        expect(Resque).to receive(:workers).and_return([worker1, worker2])
-        expect(worker1).to receive(:prune_dead_workers)
-        expect(worker2).to receive(:prune_dead_workers)
-        expect(worker3).to_not receive(:prune_dead_workers)
-        Worker.prune_dead_workers
-      end
+    it "should handle bad API responses" do
+      expect(Typhoeus).to receive(:get).with("https://tarheelreader.org/book-as-json/?slug=islands-4").and_return(OpenStruct.new(body: {
+        error: 'error'
+      }.to_json))
+      expect(AccessibleBooks.tarheel_json("https://tarheelreader.org/2018/06/07/islands-4/")).to eq(nil)
     end
-
-    describe "kill_all_workers" do
-      it "should kill all workers" do
-        worker1 = OpenStruct.new
-        worker2 = OpenStruct.new
-        worker3 = OpenStruct.new
-        expect(Resque).to receive(:workers).and_return([worker1, worker2])
-        expect(worker1).to receive(:unregister_worker)
-        expect(worker2).to receive(:unregister_worker)
-        expect(worker3).to_not receive(:unregister_worker)
-        Worker.kill_all_workers
-      end
-    end
-  end  
+  end
 end
+
+#   def self.tarheel_json(url)
+#     id = url.match(Book::TARHEEL_REGEX)[1]
+#     url = self.tarheel_json_url(id)
+#     res = Typhoeus.get(url)
+#     json = JSON.parse(res.body) rescue nil
+#     if json && json['title'] && json['pages']
+#       json['book_url'] = "https://tarheelreader.org#{json['link']}"
+#       json['attribution_url'] = "https://tarheelreader.org/photo-credits/?id=#{id}"
+#       json['pages'].each_with_index do |page, idx|
+#         page['id'] ||= idx == 0 ? 'title_page' : "page_#{idx}"
+#         page['image_url'] = page['url']
+#         page['image_url'] = "https://tarheelreader.org#{page['image_url']}" unless page['image_url'].match(/^http/)
+#       end
+#     end
+#     json['image_url'] = json['pages'][1]['image_url']
+#     json
+#   end
+# end

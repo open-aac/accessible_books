@@ -2,6 +2,7 @@ source "http://rubygems.org"
 
 gem 'json'
 gem 'typhoeus'
+gem 'nokogiri'
 
 group :test do
   gem 'rspec', :require => "spec"
