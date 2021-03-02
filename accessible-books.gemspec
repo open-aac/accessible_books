@@ -8,8 +8,8 @@ Gem::Specification.new do |s|
   s.add_development_dependency 'rspec'
   s.add_development_dependency 'ruby-debug'
 
-  s.version     = '0.1.0'
-  s.date        = '2018-07-05'
+  s.version     = '0.1.1'
+  s.date        = '2021-03-02'
   s.summary     = "AccessibleBooks"
   s.extra_rdoc_files = %W(LICENSE)
   s.homepage = %q{http://github.com/CoughDrop/boy_band}
