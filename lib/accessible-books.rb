@@ -5,10 +5,10 @@ require 'nokogiri'
 module AccessibleBooks
   TARHEEL_REGEX = /https?:\/\/tarheelreader.org\/.+\/.+\/.+\/(.+)\//
 
-  def self.search(q, locale='en')
+  def self.search(q, locale='en', category=nil)
     tarheel_prefix = "https://tarheelreader.org" #ENV['TARHEEL_PROXY'] || "https://images.weserv.nl/?url=tarheelreader.org"
     list = []
-    url = "https://tarheelreader.org/find/?search=#{CGI.escape(q)}&category=&reviewed=R&audience=E&language=#{locale}&page=1&json=1"
+    url = "https://tarheelreader.org/find/?search=#{CGI.escape(q)}&category=#{category || ''}&reviewed=R&audience=E&language=#{locale}&page=1&json=1"
     begin
       res = Typhoeus.get(url, timeout: 2)
       results = JSON.parse(res.body)
